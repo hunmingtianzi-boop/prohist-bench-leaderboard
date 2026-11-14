@@ -41,11 +41,20 @@ FAST_MODEL_MAP = {
     "gpt-6-sol": "gpt-6-sol-low-priority",
 }
 
+SWE_FAST_MODEL_MAP = {
+    "gpt-6-astra": "gemini-3-8-flash-medium",
+    "gpt-6.1-sol": "swe-2-high",
+    "gpt-6-sol": "swe-2-high",
+}
+
 
 def resolve_devin_model(model: str, effort: str) -> str:
     override = os.environ.get("DEVIN_BENCH_MODEL", "").strip()
     if override:
         return override
+    preset = os.environ.get("DEVIN_PRESET", "").strip().lower()
+    if preset == "swe_fast":
+        return SWE_FAST_MODEL_MAP.get(model.strip().lower(), "swe-2-high")
     if os.environ.get("DEVIN_FAST", "").strip().lower() in {"1", "true", "yes"}:
         fast_hit = FAST_MODEL_MAP.get(model.strip().lower())
         if fast_hit:
