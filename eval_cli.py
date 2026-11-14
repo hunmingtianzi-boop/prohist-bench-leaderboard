@@ -169,6 +169,37 @@ def _codex_judge_item(item: dict[str, Any], model: str) -> dict[str, Any]:
     return {"id": int(parsed["id"]), "hits": [int(x) for x in parsed.get("hits", [])]}
 
 
+def _devin_judge_item(item: dict[str, Any], model: str) -> dict[str, Any]:
+    """Score one question via Devin CLI (`devin -p --prompt-file`)."""
+    from devin_codex_shim import extract_json_text, find_devin_exe, resolve_devin_model
+
+    devin_exe = find_devin_exe()
+    devin_model = resolve_devin_model(model, "medium")
+    prompt = (
+        f"{JUDGE_SYSTEM_PROMPT}\n\n"
+        '仅输出合法 JSON：{"id": <整数题号>, "hits": [<触发的条目index整数数组>]}。\n\n'
+        + json.dumps(item, ensure_ascii=False)
+    )
+    with tempfile.TemporaryDirectory(prefix="devin_judge_") as tmp:
+        pfile = Path(tmp) / "prompt.txt"
+        pfile.write_text(prompt, encoding="utf-8")
+        cmd = [
+            devin_exe,
+            "-p",
+            "--prompt-file",
+            str(pfile),
+            "--model",
+            devin_model,
+            "--respect-workspace-trust",
+            "false",
+            "--verbosity",
+            "0",
+        ]
+        proc = subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8")
+        parsed = json.loads(extract_json_text(proc.stdout))
+    return {"id": int(parsed["id"]), "hits": [int(x) for x in parsed.get("hits", [])]}
+
+
 def bootstrap_ci(values: list[float], n_boot: int = 2000, seed: int = 42) -> list[float]:
     """Return 95% bootstrap confidence interval `[low, high]` for the mean of `values`."""
     if not values:
@@ -216,6 +247,8 @@ def score_submission(
             res = _openai_judge_item(it, model=judge_model, api_base=api_base, api_key=api_key)
         elif backend == "codex":
             res = _codex_judge_item(it, model=judge_model)
+        elif backend == "devin":
+            res = _devin_judge_item(it, model=judge_model)
         else:
             raise ValueError(f"Unknown backend: {backend}")
 
@@ -312,8 +345,9 @@ def main() -> None:
     p_sco = sub.add_parser("score", help="Score a submission.jsonl against benchmark rubrics")
     p_sco.add_argument("--submission", type=Path, required=True)
     p_sco.add_argument("--split", default="dev60", choices=("dev60", "holdout60", "test300"))
-    p_sco.add_argument("--backend", default="openai", choices=("mock", "openai", "codex"))
+    p_sco.add_argument("--backend", default="openai", choices=("mock", "openai", "codex", "devin"))
     p_sco.add_argument("--judge-model", default="gpt-6-astra")
+    p_sco.add_argument("--fast", action="store_true", help="Use fast Devin preset (gpt-6-luna-medium-priority) for rapid validation")
     p_sco.add_argument("--workers", type=int, default=4)
     p_sco.add_argument("--out", type=Path, default=None)
 
@@ -332,7 +366,8 @@ def main() -> None:
         if res["status"] != "PASS":
             raise SystemExit(1)
     elif args.cmd == "score":
-        report = score_submission(args.submission, args.split, args.backend, args.judge_model, args.workers)
+        j_model = "gpt-6-luna-medium-priority" if (args.fast and args.judge_model == "gpt-6-astra") else args.judge_model
+        report = score_submission(args.submission, args.split, args.backend, j_model, args.workers)
         if args.out:
             args.out.parent.mkdir(parents=True, exist_ok=True)
             args.out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
